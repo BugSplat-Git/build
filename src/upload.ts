@@ -7,6 +7,8 @@ import { uploadWithSymbolUpload } from './symbol-upload.js';
 /** The glob that selects the files to upload, relative to the output directory. */
 export const SOURCE_MAP_GLOB = '**/*.map';
 
+const JAVASCRIPT_SOURCE_MAP = /\.[cm]?js\.map$/;
+
 export interface UploadSourceMapsOptions
   extends Pick<
     BugSplatOptions,
@@ -27,12 +29,12 @@ export interface UploadSourceMapsOptions
 }
 
 export interface UploadSourceMapsResult {
-  /** Absolute paths of the source maps found below the directory. */
+  /** Absolute paths of the source maps found below the directory before the upload. */
   sourceMaps: string[];
   /** True when the source maps were uploaded; false for a dry run or when there were none. */
   uploaded: boolean;
-  /** True when the source maps were deleted after the upload. */
-  deleted: boolean;
+  /** Absolute paths of the source maps that were deleted after the upload. */
+  deleted: string[];
 }
 
 function plural(count: number, noun: string): string {
@@ -65,7 +67,22 @@ export function missingUploadSettings(options: {
  * Rejects when a required setting is missing or the upload fails. Finding no source maps is not
  * an error: one warning is logged and `uploaded` is false.
  */
-export async function uploadSourceMaps(options: UploadSourceMapsOptions): Promise<UploadSourceMapsResult> {
+export function uploadSourceMaps(options: UploadSourceMapsOptions): Promise<UploadSourceMapsResult> {
+  return uploadDirectory(options);
+}
+
+/**
+ * {@link uploadSourceMaps} for the bundler plugins, which know the files their build emitted.
+ *
+ * @param ownFiles Absolute paths of the files this build wrote. `deleteSourceMapsAfterUpload`
+ * then deletes only the source maps among them: two builds that share an output directory (the
+ * main and preload builds of an Electron Forge app) never delete each other's source maps before
+ * the other build has uploaded them.
+ */
+export async function uploadDirectory(
+  options: UploadSourceMapsOptions,
+  ownFiles?: string[],
+): Promise<UploadSourceMapsResult> {
   const directory = path.resolve(options.directory);
   const resolved = resolveOptions(options, options.root);
   const { logger } = resolved;
@@ -74,13 +91,13 @@ export async function uploadSourceMaps(options: UploadSourceMapsOptions): Promis
   const sourceMaps = await listFiles(directory, (name) => name.endsWith('.map'));
   if (!sourceMaps.length) {
     logger.warn(`No source maps found in ${where}, so nothing was uploaded. Turn on source maps in your bundler.`);
-    return { sourceMaps, uploaded: false, deleted: false };
+    return { sourceMaps, uploaded: false, deleted: [] };
   }
 
   if (resolved.dryRun) {
     const names = sourceMaps.map((file) => path.relative(directory, file)).join(', ');
     logger.info(`Dry run: would upload ${plural(sourceMaps.length, 'source map')} from ${where}: ${names}`);
-    return { sourceMaps, uploaded: false, deleted: false };
+    return { sourceMaps, uploaded: false, deleted: [] };
   }
 
   const missing = missingUploadSettings(resolved);
@@ -88,7 +105,10 @@ export async function uploadSourceMaps(options: UploadSourceMapsOptions): Promis
     throw new Error(`missing ${missing.join(', ')}`);
   }
 
-  await uploadWithSymbolUpload({
+  const target = `database ${resolved.database} (${resolved.application} ${resolved.version})`;
+  // Said before the upload starts: an unreachable host is retried for minutes before the upload fails.
+  logger.info(`Uploading ${plural(sourceMaps.length, 'source map')} from ${where} to ${target}...`);
+  const uploaded = await uploadWithSymbolUpload({
     database: resolved.database!,
     application: resolved.application!,
     version: resolved.version!,
@@ -98,13 +118,21 @@ export async function uploadSourceMaps(options: UploadSourceMapsOptions): Promis
     directory,
     files: [SOURCE_MAP_GLOB],
   });
-  logger.info(
-    `Uploaded ${plural(sourceMaps.length, 'source map')} from ${where} to database ${resolved.database} (${resolved.application} ${resolved.version}).`,
-  );
+  logger.info(`Uploaded ${plural(uploaded.length, 'source map')} from ${where} to ${target}.`);
 
-  if (resolved.deleteSourceMapsAfterUpload) {
-    await Promise.all(sourceMaps.map((file) => rm(file, { force: true })));
-    logger.info(`Deleted ${plural(sourceMaps.length, 'source map')} from ${where}.`);
+  const withoutDebugId = uploaded.filter((file) => !file.debugId && JAVASCRIPT_SOURCE_MAP.test(file.path));
+  if (withoutDebugId.length) {
+    const names = withoutDebugId.map((file) => path.relative(directory, file.path)).join(', ');
+    logger.warn(`These source maps have no debug ID, so BugSplat can only match them by file name: ${names}`);
   }
-  return { sourceMaps, uploaded: true, deleted: resolved.deleteSourceMapsAfterUpload };
+
+  let deleted: string[] = [];
+  if (resolved.deleteSourceMapsAfterUpload) {
+    // Only files that were uploaded are deleted, and for a plugin only the ones its build wrote.
+    const own = ownFiles && new Set(ownFiles.map((file) => path.resolve(file)));
+    deleted = uploaded.map((file) => path.resolve(file.path)).filter((file) => !own || own.has(file));
+    await Promise.all(deleted.map((file) => rm(file, { force: true })));
+    logger.info(`Deleted ${plural(deleted.length, 'source map')} from ${where}.`);
+  }
+  return { sourceMaps, uploaded: true, deleted };
 }

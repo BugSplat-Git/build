@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { injectDebugIdIntoFile } from './fs.js';
 import { resolveOptions, type BugSplatOptions } from './options.js';
-import { missingUploadSettings, uploadSourceMaps } from './upload.js';
+import { missingUploadSettings, uploadDirectory } from './upload.js';
 
 const JAVASCRIPT_FILE = /\.[cm]?js$/;
 
@@ -68,7 +68,10 @@ export async function afterWrite(context: AfterWriteContext): Promise<Error | un
   }
 
   try {
-    await uploadSourceMaps({ ...context.options, directory, root: context.root });
+    await uploadDirectory(
+      { ...context.options, directory, root: context.root },
+      context.files.map((file) => path.resolve(directory, file)),
+    );
     return undefined;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

@@ -7,8 +7,9 @@ import vm from 'node:vm';
 
 const [mode, file] = process.argv.slice(2);
 
-// webpack's browser runtime reaches for `self`.
+// webpack's browser runtime reaches for `self`, and for the page URL when the bundle has a worker.
 globalThis.self = globalThis;
+globalThis.location = { href: 'http://localhost/' };
 
 if (mode === 'module') {
   await import(pathToFileURL(file).href);

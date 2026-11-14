@@ -11,6 +11,7 @@ import {
   expectDebugId,
   expectRegistration,
   expectTokenMapsToSource,
+  fakeUpload,
   fixtureRoot,
   listSourceMaps,
   outputDirectory,
@@ -34,7 +35,7 @@ describe(`webpack ${webpack.version}`, () => {
   beforeEach(() => {
     logged = createTestLogger();
     upload.mockReset();
-    upload.mockResolvedValue(undefined);
+    upload.mockImplementation(fakeUpload);
   });
 
   async function build(
@@ -86,8 +87,8 @@ describe(`webpack ${webpack.version}`, () => {
     const { files, stats } = await build('ids');
 
     expectNoProblems(stats);
-    // The entry and the dynamically imported chunk.
-    expect(files.length).toBeGreaterThanOrEqual(2);
+    // The entry, the dynamically imported chunk and the worker.
+    expect(files).toHaveLength(3);
     const ids = files.map((built) => expectDebugId(built));
     expect(new Set(ids).size).toBe(files.length);
   });
@@ -106,13 +107,14 @@ describe(`webpack ${webpack.version}`, () => {
     expectTokenMapsToSource(files, 'lazy-boom-token', 'lazy.js');
     expectTokenMapsToSource(files, 'entry-greeting-token', 'main.js');
     expectTokenMapsToSource(files, 'after-database-token', 'main.js');
+    expectTokenMapsToSource(files, 'worker-reply-token', 'worker.js');
   });
 
   it('derives the same IDs in two identical builds', async () => {
     const first = await build('deterministic-1');
     const second = await build('deterministic-2');
 
-    expect(Object.keys(debugIdsByName(first.files)).length).toBeGreaterThanOrEqual(2);
+    expect(Object.keys(debugIdsByName(first.files))).toHaveLength(3);
     expect(debugIdsByName(second.files)).toEqual(debugIdsByName(first.files));
   });
 
@@ -137,7 +139,7 @@ describe(`webpack ${webpack.version}`, () => {
   it('handles hidden source maps, which have no sourceMappingURL comment', async () => {
     const { files } = await build('hidden', { devtool: 'hidden-source-map' });
 
-    expect(files.length).toBeGreaterThanOrEqual(2);
+    expect(files).toHaveLength(3);
     for (const built of files) {
       expect(built.code).not.toContain('sourceMappingURL');
       expectRegistration(built, expectDebugId(built), 'script');
@@ -222,7 +224,10 @@ describe(`webpack ${webpack.version}`, () => {
         files: ['**/*.map'],
       });
       files.forEach((built) => expectDebugId(built));
-      expect(lines().filter((line) => line.startsWith('info: Uploaded'))).toHaveLength(1);
+      expect(lines()).toEqual([
+        expect.stringMatching(/^info: Uploading 3 source maps from .* to database fred \(fixture-app 1\.2\.3\)\.\.\.$/),
+        expect.stringMatching(/^info: Uploaded 3 source maps from .* to database fred \(fixture-app 1\.2\.3\)\.$/),
+      ]);
     });
 
     it('skips the upload with one log line when credentials are absent', async () => {
@@ -249,8 +254,8 @@ describe(`webpack ${webpack.version}`, () => {
 
       expect(upload).not.toHaveBeenCalled();
       expect(lines()).toHaveLength(1);
-      expect(lines()[0]).toMatch(/^info: Dry run: would upload 2 source maps from /);
-      expect(listSourceMaps(outDir)).toHaveLength(2);
+      expect(lines()[0]).toMatch(/^info: Dry run: would upload 3 source maps from /);
+      expect(listSourceMaps(outDir)).toHaveLength(3);
     });
 
     it('keeps the build green when the upload fails', async () => {
@@ -259,6 +264,7 @@ describe(`webpack ${webpack.version}`, () => {
 
       expectNoProblems(stats);
       expect(lines()).toEqual([
+        expect.stringMatching(/^info: Uploading 3 source maps from .* to database fred \(fixture-app 1\.2\.3\)\.\.\.$/),
         'error: Source map upload failed: 401 Unauthorized. The build continues; set failOnError: true to fail it.',
       ]);
     });

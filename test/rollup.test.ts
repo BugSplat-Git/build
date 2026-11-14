@@ -11,6 +11,7 @@ import {
   expectDebugId,
   expectRegistration,
   expectTokenMapsToSource,
+  fakeUpload,
   fixtureRoot,
   outputDirectory,
   readBuiltFiles,
@@ -31,7 +32,7 @@ describe.each([
   beforeEach(() => {
     logged = createTestLogger();
     upload.mockReset();
-    upload.mockResolvedValue(undefined);
+    upload.mockImplementation(fakeUpload);
   });
 
   async function build(

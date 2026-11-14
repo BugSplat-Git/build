@@ -81,6 +81,7 @@
     "prepack": "npm run build"
   },
   "dependencies": {
+    "@bugsplat/symbol-upload": "^11.2.0",
     "magic-string": "^1.4.5"
   },
   "peerDependencies": {

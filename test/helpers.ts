@@ -6,6 +6,7 @@ import { originalPositionFor, TraceMap } from '@jridgewell/trace-mapping';
 import { expect } from 'vitest';
 import { createRegistrationSnippet, normaliseDebugId } from '../src/debug-id.js';
 import type { Logger } from '../src/options.js';
+import type { SourceMapUploadRequest, UploadedSourceMap } from '../src/symbol-upload.js';
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 
@@ -69,6 +70,17 @@ export function readBuiltFiles(directory: string): BuiltFile[] {
 
 export function listSourceMaps(directory: string): string[] {
   return walk(directory).filter((file) => file.endsWith('.map'));
+}
+
+/**
+ * Stands in for the adapter around @bugsplat/symbol-upload: resolves, as the real one does, with
+ * every `.map` file below the directory and the normalised debug ID read from it.
+ */
+export async function fakeUpload(request: SourceMapUploadRequest): Promise<UploadedSourceMap[]> {
+  return listSourceMaps(request.directory).map((file) => {
+    const map = JSON.parse(readFileSync(file, 'utf8')) as { debugId?: string };
+    return { path: file, debugId: normaliseDebugId(map.debugId) ?? '' };
+  });
 }
 
 const DEBUG_ID_COMMENT = /^\/\/# debugId=(.+)$/;

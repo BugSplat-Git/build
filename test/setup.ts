@@ -1,9 +1,9 @@
 import { beforeEach, vi } from 'vitest';
 
 // No test may reach BugSplat: the adapter around @bugsplat/symbol-upload is replaced everywhere.
-// (symbol-upload.test.ts loads the real adapter and replaces the package underneath it instead.)
+// (real-upload.test.ts opts out, and points the real adapter at a local HTTP server.)
 vi.mock('../src/symbol-upload.js', () => ({
-  uploadWithSymbolUpload: vi.fn(async () => undefined),
+  uploadWithSymbolUpload: vi.fn(async () => []),
 }));
 
 const ENVIRONMENT_VARIABLES = [

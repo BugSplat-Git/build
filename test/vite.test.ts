@@ -9,6 +9,7 @@ import {
   expectDebugId,
   expectRegistration,
   expectTokenMapsToSource,
+  fakeUpload,
   fixtureRoot,
   listSourceMaps,
   outputDirectory,
@@ -24,6 +25,8 @@ interface BuildSettings {
   /** Rollup/Rolldown output options, such as `sourcemapDebugIds`. */
   output?: Record<string, unknown>;
   sourcemap?: boolean | 'hidden' | 'inline';
+  /** Build src/main.js as a CommonJS library, the way Electron Forge builds main and preload scripts. */
+  commonjsLibrary?: boolean;
   extraPlugins?: unknown[];
 }
 
@@ -39,7 +42,7 @@ describe.each([
   beforeEach(() => {
     logged = createTestLogger();
     upload.mockReset();
-    upload.mockResolvedValue(undefined);
+    upload.mockImplementation(fakeUpload);
   });
 
   async function build(name: string, settings: BuildSettings = {}): Promise<{ outDir: string; files: BuiltFile[] }> {
@@ -65,6 +68,9 @@ describe.each([
         // The polyfill touches `document` when the entry loads, which the tests' Node process lacks.
         modulePreload: { polyfill: false },
         [major >= 8 ? 'rolldownOptions' : 'rollupOptions']: { output: settings.output ?? {} },
+        ...(settings.commonjsLibrary
+          ? { lib: { entry: path.join(fixtureRoot, 'src', 'main.js'), formats: ['cjs'], fileName: () => 'main.cjs' } }
+          : {}),
       },
     });
     return { outDir, files: readBuiltFiles(outDir) };
@@ -73,8 +79,8 @@ describe.each([
   it('writes one debug ID to every JavaScript file and its source map', async () => {
     const { files } = await build('ids');
 
-    // The entry and the dynamically imported chunk.
-    expect(files.length).toBeGreaterThanOrEqual(2);
+    // The entry, the dynamically imported chunk and the worker.
+    expect(files.length).toBeGreaterThanOrEqual(3);
     const ids = files.map((built) => expectDebugId(built));
     expect(new Set(ids).size).toBe(files.length);
   });
@@ -93,26 +99,37 @@ describe.each([
     expectTokenMapsToSource(files, 'lazy-boom-token', 'lazy.js');
     expectTokenMapsToSource(files, 'entry-greeting-token', 'main.js');
     expectTokenMapsToSource(files, 'after-database-token', 'main.js');
+    expectTokenMapsToSource(files, 'worker-reply-token', 'worker.js');
   });
 
   it('gives the same files the same IDs in two identical builds', async () => {
     const first = await build('deterministic-1');
     const second = await build('deterministic-2');
 
-    expect(Object.keys(debugIdsByName(first.files)).length).toBeGreaterThanOrEqual(2);
+    expect(Object.keys(debugIdsByName(first.files))).toHaveLength(3);
     expect(debugIdsByName(second.files)).toEqual(debugIdsByName(first.files));
   });
 
-  it("uses the bundler's own debug IDs", async () => {
+  it("uses the bundler's own debug IDs, and derives one for the worker file, which Vite bundles separately", async () => {
     const withoutPlugin = await build('native-reference', { plugin: false, output: { sourcemapDebugIds: true } });
     const withPlugin = await build('native');
 
-    // The reference build proves the bundler wrote these IDs itself.
+    // The reference build shows which files the bundler writes an ID to by itself: every chunk.
+    // The worker is the product of a separate build inside Vite that this option does not reach.
+    const hasNativeId = (built: BuiltFile) => /\n\/\/# debugId=[0-9a-f-]{36}\n/.test(built.code);
+    const native = withoutPlugin.files.filter(hasNativeId);
+    const others = withoutPlugin.files.filter((built) => !hasNativeId(built));
+    expect(native.length).toBeGreaterThanOrEqual(2);
+    expect(others.map((built) => built.name)).toEqual([expect.stringMatching(/^assets\/worker-.*\.js$/)]);
     for (const built of withoutPlugin.files) {
-      expect(built.code).toMatch(/\n\/\/# debugId=[0-9a-f-]{36}\n/);
       expect(built.code).not.toContain('_debugIds');
     }
-    expect(debugIdsByName(withPlugin.files)).toEqual(debugIdsByName(withoutPlugin.files));
+
+    const ids = debugIdsByName(withPlugin.files);
+    for (const built of native) {
+      expect(ids[built.name], `${built.name} keeps the bundler's ID`).toBe(built.map.debugId);
+    }
+    expect(withPlugin.files.map((built) => built.name)).toEqual(withoutPlugin.files.map((built) => built.name));
     withPlugin.files.forEach((built) => expectDebugId(built));
   });
 
@@ -133,11 +150,28 @@ describe.each([
   it('handles hidden source maps, which have no sourceMappingURL comment', async () => {
     const { files } = await build('hidden', { sourcemap: 'hidden' });
 
-    expect(files.length).toBeGreaterThanOrEqual(2);
+    expect(files).toHaveLength(3);
     for (const built of files) {
       expect(built.code).not.toContain('sourceMappingURL');
       expectRegistration(built, expectDebugId(built), 'module');
     }
+  });
+
+  it('handles a CommonJS library build, the kind Electron Forge makes for main and preload scripts', async () => {
+    const { files } = await build('commonjs-library', {
+      commonjsLibrary: true,
+      plugin: { database: 'fred-option' },
+      // The test folder is inside an ES module package, so CommonJS chunks need the .cjs extension.
+      output: { chunkFileNames: '[name]-[hash].cjs' },
+    });
+
+    expect(files.map((built) => built.name)).toContain('main.cjs');
+    expect(files.length).toBeGreaterThanOrEqual(2);
+    for (const built of files) {
+      expectRegistration(built, expectDebugId(built), 'commonjs');
+    }
+    expect(files.map((built) => built.code).join('\n')).toContain('fred-option');
+    expectTokenMapsToSource(files, 'lazy-boom-token', 'lazy.js');
   });
 
   it('leaves files alone and says so when there are no source map files', async () => {
@@ -193,7 +227,10 @@ describe.each([
       });
       // Every map was complete on disk before the upload started, and is still there after it.
       files.forEach((built) => expectDebugId(built));
-      expect(lines().filter((line) => line.startsWith('info: Uploaded'))).toHaveLength(1);
+      expect(lines()).toEqual([
+        expect.stringMatching(/^info: Uploading 3 source maps from .* to database fred \(fixture-app 1\.2\.3\)\.\.\.$/),
+        expect.stringMatching(/^info: Uploaded 3 source maps from .* to database fred \(fixture-app 1\.2\.3\)\.$/),
+      ]);
     });
 
     it('reads credentials, database and host from the environment and prefers explicit names', async () => {
@@ -238,8 +275,10 @@ describe.each([
 
       expect(upload).not.toHaveBeenCalled();
       expect(lines()).toHaveLength(1);
-      expect(lines()[0]).toMatch(/^info: Dry run: would upload 2 source maps from .*: assets\/.*\.js\.map, assets\/.*\.js\.map$/);
-      expect(listSourceMaps(outDir)).toHaveLength(2);
+      expect(lines()[0]).toMatch(
+        /^info: Dry run: would upload 3 source maps from .*: assets\/index-.*\.js\.map, assets\/lazy-.*\.js\.map, assets\/worker-.*\.js\.map$/,
+      );
+      expect(listSourceMaps(outDir)).toHaveLength(3);
     });
 
     it('deletes the source maps after a successful upload when asked to', async () => {
@@ -257,9 +296,10 @@ describe.each([
         plugin: { ...credentials, deleteSourceMapsAfterUpload: true },
       });
 
-      expect(files.length).toBeGreaterThanOrEqual(2);
-      expect(listSourceMaps(outDir)).toHaveLength(2);
+      expect(files).toHaveLength(3);
+      expect(listSourceMaps(outDir)).toHaveLength(3);
       expect(lines()).toEqual([
+        expect.stringMatching(/^info: Uploading 3 source maps from .* to database fred \(fixture-app 1\.2\.3\)\.\.\.$/),
         'error: Source map upload failed: 401 Unauthorized. The build continues; set failOnError: true to fail it.',
       ]);
     });

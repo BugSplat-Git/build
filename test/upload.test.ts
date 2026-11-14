@@ -2,9 +2,10 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { afterWrite } from '../src/after-write.js';
+import { deriveDebugId } from '../src/debug-id.js';
 import { uploadWithSymbolUpload } from '../src/symbol-upload.js';
 import { uploadSourceMaps } from '../src/upload.js';
-import { createTestLogger, fixtureRoot, listSourceMaps, outputDirectory } from './helpers.js';
+import { createTestLogger, fakeUpload, fixtureRoot, listSourceMaps, outputDirectory } from './helpers.js';
 
 const upload = vi.mocked(uploadWithSymbolUpload);
 const settings = {
@@ -19,14 +20,14 @@ function directoryWithMaps(name: string, maps = ['a.js.map', 'nested/b.js.map'])
   const directory = outputDirectory(name);
   for (const map of maps) {
     mkdirSync(path.dirname(path.join(directory, map)), { recursive: true });
-    writeFileSync(path.join(directory, map), '{"version":3}');
+    writeFileSync(path.join(directory, map), JSON.stringify({ version: 3, debugId: deriveDebugId(map) }));
   }
   return directory;
 }
 
 beforeEach(() => {
   upload.mockReset();
-  upload.mockResolvedValue(undefined);
+  upload.mockImplementation(fakeUpload);
 });
 
 describe('uploadSourceMaps', () => {
@@ -45,10 +46,27 @@ describe('uploadSourceMaps', () => {
     expect(result).toEqual({
       sourceMaps: [path.join(directory, 'a.js.map'), path.join(directory, 'nested', 'b.js.map')],
       uploaded: true,
-      deleted: false,
+      deleted: [],
     });
-    expect(lines).toHaveLength(1);
-    expect(lines[0]!.message).toMatch(/^Uploaded 2 source maps from .* to database fred \(my-app 1\.0\.0\)\.$/);
+    expect(lines.map((line) => line.level)).toEqual(['info', 'info']);
+    expect(lines[0]!.message).toMatch(/^Uploading 2 source maps from .* to database fred \(my-app 1\.0\.0\)\.\.\.$/);
+    expect(lines[1]!.message).toMatch(/^Uploaded 2 source maps from .* to database fred \(my-app 1\.0\.0\)\.$/);
+  });
+
+  it('warns about uploaded JavaScript source maps that have no debug ID, and not about other source maps', async () => {
+    const directory = directoryWithMaps('upload-core-no-id');
+    writeFileSync(path.join(directory, 'legacy.js.map'), '{"version":3}');
+    writeFileSync(path.join(directory, 'style.css.map'), '{"version":3}');
+    const { logger, lines } = createTestLogger();
+
+    await uploadSourceMaps({ ...settings, directory, logger });
+
+    expect(lines.filter((line) => line.level === 'warn')).toEqual([
+      {
+        level: 'warn',
+        message: 'These source maps have no debug ID, so BugSplat can only match them by file name: legacy.js.map',
+      },
+    ]);
   });
 
   it('takes application and version from the package.json at or above root', async () => {
@@ -83,7 +101,7 @@ describe('uploadSourceMaps', () => {
 
     const result = await uploadSourceMaps({ ...settings, directory, logger });
 
-    expect(result).toEqual({ sourceMaps: [], uploaded: false, deleted: false });
+    expect(result).toEqual({ sourceMaps: [], uploaded: false, deleted: [] });
     expect(upload).not.toHaveBeenCalled();
     expect(lines.map((line) => line.level)).toEqual(['warn']);
   });
@@ -100,7 +118,7 @@ describe('uploadSourceMaps', () => {
     expect(listSourceMaps(failing)).toHaveLength(2);
 
     const result = await uploadSourceMaps({ ...settings, directory: succeeding, deleteSourceMapsAfterUpload: true, logger });
-    expect(result.deleted).toBe(true);
+    expect(result.deleted).toEqual(result.sourceMaps);
     expect(listSourceMaps(succeeding)).toEqual([]);
   });
 
@@ -110,7 +128,7 @@ describe('uploadSourceMaps', () => {
 
     const result = await uploadSourceMaps({ directory, dryRun: true, deleteSourceMapsAfterUpload: true, logger });
 
-    expect(result).toMatchObject({ uploaded: false, deleted: false });
+    expect(result).toMatchObject({ uploaded: false, deleted: [] });
     expect(upload).not.toHaveBeenCalled();
     expect(listSourceMaps(directory)).toHaveLength(2);
     expect(lines[0]!.message).toContain(`a.js.map, ${path.join('nested', 'b.js.map')}`);
@@ -122,7 +140,13 @@ describe('afterWrite', () => {
     const logged = createTestLogger();
     return {
       logged,
-      context: { options: { logger: logged.logger, ...options }, root: fixtureRoot, directory, files: [], watchMode },
+      context: {
+        options: { logger: logged.logger, ...options },
+        root: fixtureRoot,
+        directory,
+        files: [] as string[],
+        watchMode,
+      },
     };
   };
 
@@ -139,6 +163,27 @@ describe('afterWrite', () => {
 
     expect(await afterWrite(explicit.context)).toBeUndefined();
     expect(upload).toHaveBeenCalledTimes(1);
+  });
+
+  it("deletes only its own build's source maps from an output directory that two builds share", async () => {
+    // Electron Forge writes the main and the preload build to the same folder.
+    const directory = directoryWithMaps('after-write-shared', ['main.js.map', 'preload.js.map']);
+    const main = context(directory, { ...settings, deleteSourceMapsAfterUpload: true });
+    main.context.files = ['main.js', 'main.js.map'];
+    const preload = context(directory, { ...settings, deleteSourceMapsAfterUpload: true });
+    preload.context.files = ['preload.js', 'preload.js.map'];
+
+    expect(await afterWrite(main.context)).toBeUndefined();
+    expect(listSourceMaps(directory)).toEqual([path.join(directory, 'preload.js.map')]);
+
+    expect(await afterWrite(preload.context)).toBeUndefined();
+    expect(listSourceMaps(directory)).toEqual([]);
+    expect(upload).toHaveBeenCalledTimes(2);
+    expect(preload.logged.lines.map((line) => line.message)).toEqual([
+      expect.stringMatching(/^Uploading 1 source map from /),
+      expect.stringMatching(/^Uploaded 1 source map from /),
+      expect.stringMatching(/^Deleted 1 source map from /),
+    ]);
   });
 
   it('treats upload: true without credentials as a failed upload', async () => {

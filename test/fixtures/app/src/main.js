@@ -7,12 +7,18 @@ export async function loadLazy() {
   return lazy.explode;
 }
 
+// Vite and webpack bundle the worker into a file of its own.
+export function startWorker() {
+  return new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+}
+
 export function greet(name) {
   return formatGreeting(name, 'entry-greeting-token');
 }
 
 globalThis.__fixture = {
   loadLazy,
+  startWorker,
   greet,
   database: describeDatabase(process.env.BUGSPLAT_DATABASE, 'after-database-token'),
 };
