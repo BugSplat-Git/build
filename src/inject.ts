@@ -28,8 +28,10 @@ export interface InjectDebugIdResult {
   changed: boolean;
 }
 
-const SOURCE_MAPPING_URL_COMMENT = /^\/\/[#@]\s*sourceMappingURL=(\S+)$/;
-const DEBUG_ID_COMMENT = /^\/\/#\s*debugId=(\S+)$/;
+// A line with a backtick in the value is not read as one of these comments: it is where a
+// multiline template literal ends, and the code that closes the literal follows the backtick.
+const SOURCE_MAPPING_URL_COMMENT = /^\/\/[#@]\s*sourceMappingURL=([^\s`]+)$/;
+const DEBUG_ID_COMMENT = /^\/\/#\s*debugId=([^\s`]+)$/;
 
 /** The source map debug ID proposal asks consumers to look for the comment in the last 5 lines. */
 const DEBUG_ID_COMMENT_SEARCH_LINES = 5;

@@ -201,6 +201,18 @@ describe('injectDebugId', () => {
     }
   });
 
+  it('does not read the last line of a template literal as a trailing comment', () => {
+    // A minifier writes a string with line breaks in it, such as the code of an inlined worker,
+    // as a template literal, which can end the file.
+    for (const lastLine of ['//# sourceMappingURL=worker.js.map`;', `//# debugId=${nativeId}\`]);`, '//# debugId=x`;']) {
+      const code = `const worker = \`onmessage = () => {};\n${lastLine}`;
+      const result = injectDebugId(code, map);
+
+      expect(result.origin).toBe('derived');
+      expect(result.code).toBe(`${code}\n${createRegistrationSnippet(result.debugId)}\n//# debugId=${result.debugId}`);
+    }
+  });
+
   it('corrects a trailing snippet that registers a different ID', () => {
     const stale = createRegistrationSnippet('00000000-0000-4000-8000-000000000000');
     const result = injectDebugId(`a();\n${stale}\n//# debugId=${nativeId}`, map);
