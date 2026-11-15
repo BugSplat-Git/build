@@ -7,6 +7,27 @@ import { consoleLogger, DATABASE_EXPRESSION, databaseToInline, type BugSplatOpti
 
 const JAVASCRIPT_FILE = /\.[cm]?js$/;
 const DATABASE_EXPRESSION_PATTERN = /(?<![\w$.])process\.env\.BUGSPLAT_DATABASE(?![\w$])/g;
+const DATABASE_EXPRESSION_NAMES = DATABASE_EXPRESSION.split('.');
+
+/** A node of the syntax tree that the bundler's `this.parse` returns. */
+interface AstNode {
+  type: string;
+  start: number;
+  end: number;
+  [key: string]: unknown;
+}
+
+/** For each kind of node that writes to one of its children, the property that holds that child. */
+const WRITTEN_CHILD: Record<string, string> = {
+  AssignmentExpression: 'left',
+  AssignmentPattern: 'left',
+  ForInStatement: 'left',
+  ForOfStatement: 'left',
+  UpdateExpression: 'argument',
+  RestElement: 'argument',
+  ArrayPattern: 'elements',
+  ObjectPattern: 'properties',
+};
 
 /** State the Vite entry point shares with the Rollup hooks. */
 export interface PluginState {
@@ -43,6 +64,56 @@ function supportsSourcemapDebugIds(meta: { rollupVersion?: string; rolldownVersi
   }
   const rollup = parseVersion(meta.rollupVersion);
   return !!rollup && (rollup[0] > 4 || (rollup[0] === 4 && rollup[1] >= 25));
+}
+
+function isAstNode(value: unknown): value is AstNode {
+  return !!value && typeof (value as AstNode).type === 'string';
+}
+
+/** True for the expression `process.env.BUGSPLAT_DATABASE`, written with dots and without `?.`. */
+function isDatabaseExpression(node: unknown, depth = DATABASE_EXPRESSION_NAMES.length - 1): boolean {
+  if (!isAstNode(node)) {
+    return false;
+  }
+  if (depth === 0) {
+    return node.type === 'Identifier' && node.name === DATABASE_EXPRESSION_NAMES[0];
+  }
+  const property = node.property;
+  return (
+    node.type === 'MemberExpression' &&
+    !node.computed &&
+    !node.optional &&
+    isAstNode(property) &&
+    property.type === 'Identifier' &&
+    property.name === DATABASE_EXPRESSION_NAMES[depth] &&
+    isDatabaseExpression(node.object, depth - 1)
+  );
+}
+
+/**
+ * Collects the places below a node where `process.env.BUGSPLAT_DATABASE` is read. A place where
+ * it is written to (the target of an assignment, the operand of `delete`) is not one of them.
+ */
+function findDatabaseReads(node: AstNode, written = false, reads: AstNode[] = []): AstNode[] {
+  if (isDatabaseExpression(node)) {
+    if (!written) {
+      reads.push(node);
+    }
+    return reads;
+  }
+  for (const [key, value] of Object.entries(node)) {
+    const childIsWritten =
+      WRITTEN_CHILD[node.type] === key ||
+      (node.type === 'UnaryExpression' && node.operator === 'delete') ||
+      // A property of a destructuring pattern: its value is a target, its computed key is read.
+      (written && node.type === 'Property' && key === 'value');
+    for (const child of Array.isArray(value) ? value : [value]) {
+      if (isAstNode(child)) {
+        findDatabaseReads(child, childIsWritten, reads);
+      }
+    }
+  }
+  return reads;
 }
 
 function sourceToString(source: string | Uint8Array | undefined): string {
@@ -120,7 +191,22 @@ export function createRollupPlugin(options: BugSplatOptions, state: PluginState)
           return null;
         }
         const magicString = new MagicString(code);
-        magicString.replaceAll(DATABASE_EXPRESSION_PATTERN, JSON.stringify(database));
+        let reads;
+        try {
+          // Parsed, so that only code that reads the value is replaced. The same text in a string,
+          // a template literal or a comment stays as written, and so does the target of an assignment.
+          reads = findDatabaseReads(this.parse(code) as unknown as AstNode);
+        } catch {
+          // Not JavaScript yet: the plugin that compiles this module (TypeScript, JSX) is listed
+          // after this one. The text is replaced wherever it occurs.
+        }
+        if (reads) {
+          for (const read of reads) {
+            magicString.overwrite(read.start, read.end, JSON.stringify(database));
+          }
+        } else {
+          magicString.replaceAll(DATABASE_EXPRESSION_PATTERN, JSON.stringify(database));
+        }
         if (!magicString.hasChanged()) {
           return null;
         }

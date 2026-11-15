@@ -39,12 +39,13 @@ describe.each([
     name: string,
     plugin: BugSplatOptions | false = {},
     outputs: (outDir: string) => OutputOptions[] = (outDir) => [{ dir: outDir, format: 'es', sourcemap: true }],
+    { input = 'main.js', laterPlugins = [] as Plugin[] } = {},
   ): Promise<{ outDir: string; files: BuiltFile[] }> {
     const outDir = outputDirectory(`${prefix}-${name}`);
     const warnings: string[] = [];
     const bundle = await rollup({
-      input: path.join(fixtureRoot, 'src', 'main.js'),
-      plugins: plugin === false ? [] : [bugsplat({ logger: logged.logger, ...plugin }) as Plugin],
+      input: path.join(fixtureRoot, 'src', input),
+      plugins: [...(plugin === false ? [] : [bugsplat({ logger: logged.logger, ...plugin }) as Plugin]), ...laterPlugins],
       onwarn: (warning) => warnings.push(warning.message),
     });
     try {
@@ -99,6 +100,41 @@ describe.each([
     expect(code).toContain('describeDatabase("fred-option", \'after-database-token\')');
     expect(code).not.toContain('process.env.BUGSPLAT_DATABASE');
     expectTokenMapsToSource(files, 'after-database-token', 'main.js');
+  });
+
+  it('replaces only reads of process.env.BUGSPLAT_DATABASE, not strings, comments or assignment targets', async () => {
+    const { files } = await build('inline-syntax', { database: 'fred-option' }, undefined, {
+      input: 'database-expression.js',
+    });
+
+    const lines = files[0]!.code.split('\n').map((line) => line.trim());
+    expect(lines).toEqual(
+      expect.arrayContaining([
+        '// process.env.BUGSPLAT_DATABASE is text or something that is written to.',
+        'const label = "process.env.BUGSPLAT_DATABASE";',
+        "const template = `€ ${'process.env.BUGSPLAT_DATABASE'} process.env.BUGSPLAT_DATABASE`;",
+        'process.env.BUGSPLAT_DATABASE = value;',
+        '[process.env.BUGSPLAT_DATABASE] = [value];',
+        '({ value: process.env.BUGSPLAT_DATABASE } = { value });',
+        'delete process.env.BUGSPLAT_DATABASE;',
+        'const database = /* 😀 */ "fred-option";',
+        'const settings = { database: "fred-option", length: "fred-option".length };',
+      ]),
+    );
+    expect(files[0]!.code.split('fred-option')).toHaveLength(4);
+  });
+
+  it('replaces process.env.BUGSPLAT_DATABASE in a module that a later plugin compiles to JavaScript', async () => {
+    const stripTypes: Plugin = {
+      name: 'strip-types',
+      transform: (code, id) => (id.endsWith('.ts') ? { code: code.replace(': string', ''), map: { mappings: '' } } : null),
+    };
+    const { files } = await build('inline-typescript', { database: 'fred-option' }, undefined, {
+      input: 'database-expression.ts',
+      laterPlugins: [stripTypes],
+    });
+
+    expect(files[0]!.code).toContain('const database = "fred-option";');
   });
 
   it('leaves process.env.BUGSPLAT_DATABASE alone when inlineDatabase is off', async () => {
