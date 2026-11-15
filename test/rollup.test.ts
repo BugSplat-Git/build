@@ -72,14 +72,36 @@ describe.each([
   });
 
   it("uses Rollup's own debug IDs, and the same ones in two identical builds", async () => {
-    const withoutPlugin = await build('native-reference', false, (outDir) => [
-      { dir: outDir, format: 'es', sourcemap: true, sourcemapDebugIds: true },
-    ]);
+    // The reference build has the plugin's part of the chunk hashes and nothing else of it, so
+    // that both builds give the chunks the same names and a chunk that imports another the same code.
+    const { augmentChunkHash } = bugsplat() as Plugin;
+    const withoutPlugin = await build(
+      'native-reference',
+      false,
+      (outDir) => [{ dir: outDir, format: 'es', sourcemap: true, sourcemapDebugIds: true }],
+      { laterPlugins: [{ name: 'same-file-names', augmentChunkHash }] },
+    );
     const first = await build('native-1');
     const second = await build('native-2');
 
     expect(debugIdsByName(first.files)).toEqual(debugIdsByName(withoutPlugin.files));
     expect(debugIdsByName(second.files)).toEqual(debugIdsByName(first.files));
+  });
+
+  it('names a hashed chunk differently from a build without the plugin, which gives the name to other bytes', async () => {
+    // With the option set, the plugin changes nothing about the build but what it appends.
+    const outputs = (outDir: string): OutputOptions[] => [
+      { dir: outDir, format: 'es', sourcemap: true, sourcemapDebugIds: true },
+    ];
+    const hashedNames = (files: BuiltFile[]) => files.map((built) => built.name).filter((name) => /-[\w-]{8}\.js$/.test(name));
+    const withoutPlugin = await build('hash-reference', false, outputs);
+    const withPlugin = await build('hash', {}, outputs);
+
+    expect(hashedNames(withPlugin.files).length).toBeGreaterThanOrEqual(1);
+    expect(hashedNames(withPlugin.files)).toHaveLength(hashedNames(withoutPlugin.files).length);
+    for (const name of hashedNames(withPlugin.files)) {
+      expect(hashedNames(withoutPlugin.files)).not.toContain(name);
+    }
   });
 
   it('derives the same IDs in two identical builds when Rollup writes none', async () => {

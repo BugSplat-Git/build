@@ -111,7 +111,14 @@ describe.each([
   });
 
   it("uses the bundler's own debug IDs, and derives one for the worker file, which Vite bundles separately", async () => {
-    const withoutPlugin = await build('native-reference', { plugin: false, output: { sourcemapDebugIds: true } });
+    // The reference build has the plugin's part of the chunk hashes and nothing else of it, so
+    // that both builds give the chunks the same names and a chunk that imports another the same code.
+    const { augmentChunkHash } = bugsplat();
+    const withoutPlugin = await build('native-reference', {
+      plugin: false,
+      output: { sourcemapDebugIds: true },
+      extraPlugins: [{ name: 'same-file-names', augmentChunkHash }],
+    });
     const withPlugin = await build('native');
 
     // The reference build shows which files the bundler writes an ID to by itself: every chunk.
@@ -131,6 +138,21 @@ describe.each([
     }
     expect(withPlugin.files.map((built) => built.name)).toEqual(withoutPlugin.files.map((built) => built.name));
     withPlugin.files.forEach((built) => expectDebugId(built));
+  });
+
+  it('names a hashed chunk differently from a build without the plugin, which gives the name to other bytes', async () => {
+    // With the option set, the plugin changes nothing about the build but what it appends. The
+    // worker file is left out: Vite names it in a separate build that the plugin is not part of.
+    const output = { sourcemapDebugIds: true };
+    const chunkNames = (files: BuiltFile[]) => files.map((built) => built.name).filter((name) => !name.includes('worker'));
+    const withoutPlugin = await build('hash-reference', { plugin: false, output });
+    const withPlugin = await build('hash', { output });
+
+    expect(chunkNames(withPlugin.files)).toHaveLength(2);
+    expect(chunkNames(withoutPlugin.files)).toHaveLength(2);
+    for (const name of chunkNames(withPlugin.files)) {
+      expect(chunkNames(withoutPlugin.files)).not.toContain(name);
+    }
   });
 
   it('derives IDs from content when the bundler writes none', async () => {

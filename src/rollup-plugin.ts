@@ -2,6 +2,7 @@ import path from 'node:path';
 import MagicString from 'magic-string';
 import type { Plugin } from 'rollup';
 import { afterWrite } from './after-write.js';
+import { createRegistrationSnippet } from './debug-id.js';
 import { injectDebugId } from './inject.js';
 import { consoleLogger, DATABASE_EXPRESSION, databaseToInline, type BugSplatOptions } from './options.js';
 
@@ -212,6 +213,16 @@ export function createRollupPlugin(options: BugSplatOptions, state: PluginState)
         }
         return { code: magicString.toString(), map: magicString.generateMap({ hires: true }) };
       },
+    },
+
+    // The bundler names a chunk by a hash of its content before generateBundle runs, so what is
+    // appended there has to go into the hash here. Otherwise a build with the plugin would give
+    // a file the name that a build without it, or with another version of the snippet, gave to
+    // other bytes, and a cache that keeps hashed files for good would go on serving those. The
+    // snippet is hashed without its ID, which is made from the finished chunk and not known yet.
+    // The hook is not told whether the output has source maps, so it does this for every chunk.
+    augmentChunkHash() {
+      return createRegistrationSnippet('');
     },
 
     // `post`, so this runs after the other plugins (Vite's own included) have finished changing
