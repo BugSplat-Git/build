@@ -192,7 +192,8 @@ describe.each([
       clientId: 'client-id',
       clientSecret: 'client-secret',
       directory: path.join(outDir, 'es'),
-      files: ['**/*.map'],
+      // Only the source maps of this output, as paths below its directory.
+      files: files.filter((built) => built.name.startsWith('es/')).map((built) => `${built.name.slice('es/'.length)}.map`),
     });
   });
 

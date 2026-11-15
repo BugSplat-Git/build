@@ -144,7 +144,8 @@ describe('afterWrite', () => {
         options: { logger: logged.logger, ...options },
         root: fixtureRoot,
         directory,
-        files: [] as string[],
+        // The files the build wrote: the source maps that directoryWithMaps makes by default.
+        files: ['a.js.map', 'nested/b.js.map'],
         watchMode,
       },
     };
@@ -165,20 +166,27 @@ describe('afterWrite', () => {
     expect(upload).toHaveBeenCalledTimes(1);
   });
 
-  it("deletes only its own build's source maps from an output directory that two builds share", async () => {
-    // Electron Forge writes the main and the preload build to the same folder.
-    const directory = directoryWithMaps('after-write-shared', ['main.js.map', 'preload.js.map']);
+  it("uploads and deletes only its own build's source maps in an output directory that two builds share", async () => {
+    // Electron Forge writes the main and the preload build to the same folder. A source map with
+    // glob characters in its name stands for one of an earlier build.
+    const directory = directoryWithMaps('after-write-shared', ['main.js.map', 'preload.js.map', '[stale].js.map']);
     const main = context(directory, { ...settings, deleteSourceMapsAfterUpload: true });
     main.context.files = ['main.js', 'main.js.map'];
     const preload = context(directory, { ...settings, deleteSourceMapsAfterUpload: true });
     preload.context.files = ['preload.js', 'preload.js.map'];
 
     expect(await afterWrite(main.context)).toBeUndefined();
-    expect(listSourceMaps(directory)).toEqual([path.join(directory, 'preload.js.map')]);
+    expect(listSourceMaps(directory)).toEqual([path.join(directory, '[stale].js.map'), path.join(directory, 'preload.js.map')]);
 
     expect(await afterWrite(preload.context)).toBeUndefined();
-    expect(listSourceMaps(directory)).toEqual([]);
-    expect(upload).toHaveBeenCalledTimes(2);
+    expect(listSourceMaps(directory)).toEqual([path.join(directory, '[stale].js.map')]);
+    // Neither build's upload looks at a file that the other build may be deleting.
+    expect(upload.mock.calls.map(([request]) => request.files)).toEqual([['main.js.map'], ['preload.js.map']]);
+    expect(main.logged.lines.map((line) => line.message)).toEqual([
+      expect.stringMatching(/^Uploading 1 source map from /),
+      expect.stringMatching(/^Uploaded 1 source map from /),
+      expect.stringMatching(/^Deleted 1 source map from /),
+    ]);
     expect(preload.logged.lines.map((line) => line.message)).toEqual([
       expect.stringMatching(/^Uploading 1 source map from /),
       expect.stringMatching(/^Uploaded 1 source map from /),

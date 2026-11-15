@@ -74,10 +74,14 @@ export function listSourceMaps(directory: string): string[] {
 
 /**
  * Stands in for the adapter around @bugsplat/symbol-upload: resolves, as the real one does, with
- * every `.map` file below the directory and the normalised debug ID read from it.
+ * the files that the globs match and the normalised debug ID read from each. It knows two kinds
+ * of glob: every `.map` file below the directory, and the escaped path of one file.
  */
 export async function fakeUpload(request: SourceMapUploadRequest): Promise<UploadedSourceMap[]> {
-  return listSourceMaps(request.directory).map((file) => {
+  const files = request.files.flatMap((glob) =>
+    glob === '**/*.map' ? listSourceMaps(request.directory) : [path.join(request.directory, glob.replace(/\\(.)/g, '$1'))],
+  );
+  return files.map((file) => {
     const map = JSON.parse(readFileSync(file, 'utf8')) as { debugId?: string };
     return { path: file, debugId: normaliseDebugId(map.debugId) ?? '' };
   });

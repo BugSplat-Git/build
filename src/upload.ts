@@ -1,4 +1,4 @@
-import { rm } from 'node:fs/promises';
+import { rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { listFiles } from './fs.js';
 import { resolveOptions, type BugSplatOptions } from './options.js';
@@ -62,6 +62,34 @@ export function missingUploadSettings(options: {
 }
 
 /**
+ * The source maps among the files a build wrote that are on disk, below the directory. (A dev
+ * server keeps its files in memory.)
+ */
+async function findOwnSourceMaps(directory: string, ownFiles: string[]): Promise<string[]> {
+  const sourceMaps = [];
+  for (const file of new Set(ownFiles.map((ownFile) => path.resolve(ownFile)))) {
+    const relative = path.relative(directory, file);
+    const isBelowDirectory = !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+    if (file.endsWith('.map') && isBelowDirectory && (await stat(file).then((stats) => stats.isFile(), () => false))) {
+      sourceMaps.push(file);
+    }
+  }
+  return sourceMaps.sort();
+}
+
+/**
+ * A glob pattern that matches one file below the directory and nothing else: the characters of
+ * its path that mean something in a glob (a Next.js `[slug]` or `(group)` folder) are escaped.
+ */
+function globForFile(directory: string, file: string): string {
+  return path
+    .relative(directory, file)
+    .split(path.sep)
+    .join('/')
+    .replace(/[?*()[\]{}\\]/g, '\\$&');
+}
+
+/**
  * Uploads every `.map` file below a directory to BugSplat.
  *
  * Rejects when a required setting is missing or the upload fails. Finding no source maps is not
@@ -74,10 +102,13 @@ export function uploadSourceMaps(options: UploadSourceMapsOptions): Promise<Uplo
 /**
  * {@link uploadSourceMaps} for the bundler plugins, which know the files their build emitted.
  *
- * @param ownFiles Absolute paths of the files this build wrote. `deleteSourceMapsAfterUpload`
- * then deletes only the source maps among them: two builds that share an output directory (the
- * main and preload builds of an Electron Forge app) never delete each other's source maps before
- * the other build has uploaded them.
+ * @param ownFiles Absolute paths of the files this build wrote. Only the source maps among them
+ * are uploaded and, with `deleteSourceMapsAfterUpload`, deleted. Two builds that share an output
+ * directory (the main and preload builds of an Electron Forge app, which run at the same time,
+ * possibly in processes of their own) then never touch each other's source maps. If each
+ * uploaded every `.map` file in the directory, one build could delete a source map between the
+ * moment the other build's upload found it and the moment that upload read it, and that upload
+ * would fail.
  */
 export async function uploadDirectory(
   options: UploadSourceMapsOptions,
@@ -88,7 +119,9 @@ export async function uploadDirectory(
   const { logger } = resolved;
   const where = path.relative(process.cwd(), directory) || '.';
 
-  const sourceMaps = await listFiles(directory, (name) => name.endsWith('.map'));
+  const sourceMaps = ownFiles
+    ? await findOwnSourceMaps(directory, ownFiles)
+    : await listFiles(directory, (name) => name.endsWith('.map'));
   if (!sourceMaps.length) {
     logger.warn(`No source maps found in ${where}, so nothing was uploaded. Turn on source maps in your bundler.`);
     return { sourceMaps, uploaded: false, deleted: [] };
@@ -116,7 +149,7 @@ export async function uploadDirectory(
     clientSecret: resolved.clientSecret!,
     ...(resolved.host ? { host: resolved.host } : {}),
     directory,
-    files: [SOURCE_MAP_GLOB],
+    files: ownFiles ? sourceMaps.map((file) => globForFile(directory, file)) : [SOURCE_MAP_GLOB],
   });
   logger.info(`Uploaded ${plural(uploaded.length, 'source map')} from ${where} to ${target}.`);
 
@@ -129,7 +162,7 @@ export async function uploadDirectory(
   let deleted: string[] = [];
   if (resolved.deleteSourceMapsAfterUpload) {
     // Only files that were uploaded are deleted, and for a plugin only the ones its build wrote.
-    const own = ownFiles && new Set(ownFiles.map((file) => path.resolve(file)));
+    const own = ownFiles && new Set(sourceMaps);
     deleted = uploaded.map((file) => path.resolve(file.path)).filter((file) => !own || own.has(file));
     await Promise.all(deleted.map((file) => rm(file, { force: true })));
     logger.info(`Deleted ${plural(deleted.length, 'source map')} from ${where}.`);

@@ -234,7 +234,7 @@ describe.each([
   describe('upload', () => {
     const credentials = { database: 'fred', clientId: 'client-id', clientSecret: 'client-secret' };
 
-    it('uploads the output directory with the configured values and package.json defaults', async () => {
+    it("uploads the build's source maps with the configured values and package.json defaults", async () => {
       const { outDir, files } = await build('upload', { plugin: credentials });
 
       expect(upload).toHaveBeenCalledTimes(1);
@@ -245,7 +245,7 @@ describe.each([
         clientId: 'client-id',
         clientSecret: 'client-secret',
         directory: outDir,
-        files: ['**/*.map'],
+        files: files.map((built) => `${built.name}.map`),
       });
       // Every map was complete on disk before the upload started, and is still there after it.
       files.forEach((built) => expectDebugId(built));
@@ -260,7 +260,7 @@ describe.each([
       process.env.BUGSPLAT_HOST = 'http://localhost:8080';
       process.env.SYMBOL_UPLOAD_CLIENT_ID = 'environment-id';
       process.env.SYMBOL_UPLOAD_CLIENT_SECRET = 'environment-secret';
-      const { outDir } = await build('upload-environment', { plugin: { application: 'my-app', version: '9.9.9' } });
+      const { outDir, files } = await build('upload-environment', { plugin: { application: 'my-app', version: '9.9.9' } });
 
       expect(upload).toHaveBeenCalledWith({
         database: 'fred-environment',
@@ -270,7 +270,7 @@ describe.each([
         clientSecret: 'environment-secret',
         host: 'http://localhost:8080',
         directory: outDir,
-        files: ['**/*.map'],
+        files: files.map((built) => `${built.name}.map`),
       });
     });
 

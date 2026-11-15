@@ -145,13 +145,13 @@ The upload needs an [OAuth2 Client Credentials](https://docs.bugsplat.com/introd
     SYMBOL_UPLOAD_CLIENT_SECRET: ${{ secrets.SYMBOL_UPLOAD_CLIENT_SECRET }}
 ```
 
-- With a database, a client ID and a client secret, the plugin uploads every `.map` file in the output directory after the bundle is written.
+- With a database, a client ID and a client secret, the plugin uploads the build's source maps after the bundle is written.
 - Without them, the plugin skips the upload and logs one line that names the missing settings. Debug IDs are still added.
 - In watch mode (`vite build --watch`, `webpack --watch`, a dev server) the plugin skips the upload unless `upload` is `true`.
 - A failed upload logs one line and the build still succeeds. Set `failOnError: true` to fail the build instead.
 - `dryRun: true` logs the source maps the plugin would upload and uploads nothing.
 
-The plugin uploads every `.map` file below the output directory, so clear the output directory between builds (Vite does by default; for webpack set `output.clean: true`).
+The plugin uploads the `.map` files that its own build wrote to the output directory. A `.map` file that an earlier build or another tool left there is not uploaded; [`uploadSourceMaps`](#other-build-tools) uploads every `.map` file below a directory.
 
 Vite does not load `.env` files into `process.env` for the config file. If you keep the credentials in a `.env` file, load the file yourself (for example with `process.loadEnvFile()`) at the top of `vite.config.ts`.
 
@@ -226,7 +226,7 @@ await uploadSourceMaps({ directory: 'dist', database: 'fred' });
 
 **The snippet is the last statement of the file.** A file registers its debug ID once the file has run to the end. If a file throws while it is first evaluated, the error report for that throw carries no debug ID for the file. When a script's completion value matters (code passed to `eval`, `vm.runInContext` or a browser extension's `executeScript`), the completion value becomes the snippet's.
 
-**Electron Forge writes the main and preload builds to one folder.** Each of the two builds uploads every `.map` file in the shared folder, so a source map can be uploaded twice. `deleteSourceMapsAfterUpload` deletes only the source maps of the build the plugin belongs to.
+**Electron Forge writes the main and preload builds to one folder**, and runs the two builds at the same time. Each of the two plugins uploads only the source maps of its own build, and `deleteSourceMapsAfterUpload` deletes only those, so neither build reads or deletes a file of the other.
 
 **Source maps in production.** Without `deleteSourceMapsAfterUpload`, the `.map` files stay in the output directory and are deployed with your site unless you remove them.
 

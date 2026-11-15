@@ -234,7 +234,7 @@ describe(`webpack ${webpack.version}`, () => {
   describe('upload', () => {
     const credentials = { database: 'fred', clientId: 'client-id', clientSecret: 'client-secret' };
 
-    it('uploads the output directory with the configured values and package.json defaults', async () => {
+    it("uploads the build's source maps with the configured values and package.json defaults", async () => {
       const { outDir, files } = await build('upload', { plugin: credentials });
 
       expect(upload).toHaveBeenCalledTimes(1);
@@ -245,7 +245,7 @@ describe(`webpack ${webpack.version}`, () => {
         clientId: 'client-id',
         clientSecret: 'client-secret',
         directory: outDir,
-        files: ['**/*.map'],
+        files: files.map((built) => `${built.name}.map`),
       });
       files.forEach((built) => expectDebugId(built));
       expect(lines()).toEqual([

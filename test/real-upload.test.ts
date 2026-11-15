@@ -1,11 +1,12 @@
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import webpack, { type Stats } from 'webpack';
-import { normaliseDebugId } from '../src/debug-id.js';
+import { afterWrite } from '../src/after-write.js';
+import { deriveDebugId, normaliseDebugId } from '../src/debug-id.js';
 import type { BugSplatOptions } from '../src/options.js';
 import vitePlugin from '../src/vite.js';
 import webpackPlugin from '../src/webpack.js';
@@ -222,6 +223,54 @@ describe('uploading with the real @bugsplat/symbol-upload', () => {
 
     expect(requestsTo('PUT', '/presigned/')).toHaveLength(3);
     expect(listSourceMaps(outDir)).toEqual([]);
+  });
+
+  /** What a plugin does after a build that wrote these source maps (and nothing else) to the directory. */
+  function finishBuild(directory: string, sourceMaps: string[], overrides: BugSplatOptions = {}): Promise<Error | undefined> {
+    for (const sourceMap of sourceMaps) {
+      mkdirSync(path.dirname(path.join(directory, sourceMap)), { recursive: true });
+      writeFileSync(path.join(directory, sourceMap), JSON.stringify({ version: 3, debugId: deriveDebugId(sourceMap) }));
+    }
+    return afterWrite({
+      options: options({ failOnError: true, ...overrides }),
+      root: fixtureRoot,
+      directory,
+      files: sourceMaps,
+      watchMode: false,
+    });
+  }
+
+  const uploadedNames = () =>
+    requestsTo('POST', '/symsrv/uploadComplete')
+      .map((request) => request.fields.symFileName)
+      .sort();
+
+  it('lets two builds that finish at the same time in one folder each upload and delete their own source maps', async () => {
+    // Electron Forge builds the main process and the preload script into one folder, concurrently.
+    const directory = outputDirectory('real-upload-shared');
+
+    const errors = await Promise.all([
+      finishBuild(directory, ['main.js.map'], { deleteSourceMapsAfterUpload: true }),
+      finishBuild(directory, ['preload.js.map'], { deleteSourceMapsAfterUpload: true }),
+    ]);
+
+    expect(errors).toEqual([undefined, undefined]);
+    expect(lines().filter((line) => line.startsWith('error: '))).toEqual([]);
+    expect(listSourceMaps(directory)).toEqual([]);
+    // Each source map was uploaded once, by the build that wrote it.
+    expect(uploadedNames()).toEqual(['main.js.map', 'preload.js.map']);
+  });
+
+  it('uploads source maps whose names have characters that mean something in a glob', async () => {
+    const directory = outputDirectory('real-upload-glob-characters');
+    const sourceMaps = ['[id].js.map', '(group)/page.js.map', '{a,b}.js.map', '!not +(plus) @scope #1.js.map'];
+    // A source map of an earlier build, which a pattern that was read as a glob would match as well.
+    writeFileSync(path.join(directory, 'i.js.map'), JSON.stringify({ version: 3, debugId: deriveDebugId('stale') }));
+
+    expect(await finishBuild(directory, sourceMaps, { deleteSourceMapsAfterUpload: true })).toBeUndefined();
+
+    expect(uploadedNames()).toEqual(sourceMaps.map((sourceMap) => path.basename(sourceMap)).sort());
+    expect(listSourceMaps(directory)).toEqual([path.join(directory, 'i.js.map')]);
   });
 
   it('keeps the build green, and the source maps, when BugSplat rejects the credentials', async () => {
