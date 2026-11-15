@@ -78,13 +78,20 @@ export function splitTrailer(code: string): Trailer {
  * Looks for a `//# debugId=` comment that is within the last lines of the code but is followed by
  * something other than a `//#` comment (a footer added by another tool, for example). The comment
  * is blanked in place, so no line moves, and its ID is returned.
+ *
+ * Without parsing the code, a line in that place cannot be told from the same text inside a
+ * multiline template literal, where blanking it would change the string. So a line is only taken
+ * when it carries the debug ID of the source map: a bundler that writes the comment writes its ID
+ * to the source map as well, and text that only looks like the comment carries some other ID.
+ * Every other match is left as it is.
  */
-function takeStrayDebugIdComment(body: string): { body: string; debugId?: string } {
+function takeStrayDebugIdComment(body: string, mapDebugId: string | undefined): { body: string; debugId?: string } {
+  const expected = normaliseDebugId(mapDebugId);
   let end = body.length;
-  for (let i = 0; i < DEBUG_ID_COMMENT_SEARCH_LINES - 1 && end > 0; i++) {
+  for (let i = 0; expected && i < DEBUG_ID_COMMENT_SEARCH_LINES - 1 && end > 0; i++) {
     const lineStart = body.lastIndexOf('\n', end - 1) + 1;
     const debugId = DEBUG_ID_COMMENT.exec(body.slice(lineStart, end).trim());
-    if (debugId && normaliseDebugId(debugId[1])) {
+    if (debugId && normaliseDebugId(debugId[1]) === expected) {
       return { body: body.slice(0, lineStart) + body.slice(end), debugId: debugId[1] };
     }
     end = Math.max(lineStart - 1, 0);
@@ -126,13 +133,13 @@ export function injectDebugId(code: string, map: string): InjectDebugIdResult {
   }
   const mapObject = parsedMap as Record<string, unknown>;
 
+  const mapDebugId = readMapDebugId(mapObject);
   const trailer = splitTrailer(code);
-  const stray = trailer.debugId ? { body: trailer.body } : takeStrayDebugIdComment(trailer.body);
+  const stray = trailer.debugId ? { body: trailer.body } : takeStrayDebugIdComment(trailer.body, mapDebugId);
   const existingSnippet = splitRegistrationSnippet(stray.body);
   const body = existingSnippet ? existingSnippet.code : stray.body;
 
   const commentDebugId = trailer.debugId ?? stray.debugId;
-  const mapDebugId = readMapDebugId(mapObject);
   let debugId: string;
   let origin: DebugIdOrigin;
   if (commentDebugId) {

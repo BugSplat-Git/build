@@ -163,8 +163,10 @@ describe('injectDebugId', () => {
   });
 
   it('finds a debugId comment that is followed by a footer, without moving any line', () => {
+    // A bundler that writes the comment writes the same ID to the source map.
+    const mapWithId = JSON.stringify({ ...JSON.parse(map), debugId: nativeId });
     const code = `a();\n//# debugId=${nativeId}\n/* footer */\n//# sourceMappingURL=app.js.map`;
-    const result = injectDebugId(code, map);
+    const result = injectDebugId(code, mapWithId);
 
     expect(result.origin).toBe('comment');
     expect(result.code.split('\n')).toEqual([
@@ -176,6 +178,27 @@ describe('injectDebugId', () => {
       '//# sourceMappingURL=app.js.map',
     ]);
     expect(injectDebugId(result.code, result.map).changed).toBe(false);
+  });
+
+  it('leaves a line that looks like a debugId comment inside a template literal as it is', () => {
+    const body = `const text = \`\n//# debugId=${nativeId}\n\`;\nexport { text };`;
+    const code = `${body}\n//# sourceMappingURL=app.js.map`;
+    const otherId = '00000000-0000-4000-8000-000000000000';
+
+    for (const [sourceMap, origin] of [
+      [map, 'derived'],
+      [JSON.stringify({ ...JSON.parse(map), debugId: otherId }), 'map'],
+    ] as const) {
+      const result = injectDebugId(code, sourceMap);
+
+      // The text of the string is untouched, and its ID is not taken for the file's own.
+      expect(result.origin).toBe(origin);
+      expect(result.debugId).not.toBe(nativeId);
+      expect(result.code).toBe(
+        `${body}\n${createRegistrationSnippet(result.debugId)}\n//# debugId=${result.debugId}\n//# sourceMappingURL=app.js.map`,
+      );
+      expect(injectDebugId(result.code, result.map).changed).toBe(false);
+    }
   });
 
   it('corrects a trailing snippet that registers a different ID', () => {
