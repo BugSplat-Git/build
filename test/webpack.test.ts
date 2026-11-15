@@ -26,6 +26,10 @@ interface BuildSettings {
   plugin?: BugSplatOptions | false;
   devtool?: Configuration['devtool'];
   extraPlugins?: WebpackPluginInstance[];
+  /** Default: names with a content hash. */
+  filename?: string;
+  /** Build into the directory of an earlier build, as it is, instead of an empty one. */
+  outDir?: string;
 }
 
 describe(`webpack ${webpack.version}`, () => {
@@ -42,7 +46,7 @@ describe(`webpack ${webpack.version}`, () => {
     name: string,
     settings: BuildSettings = {},
   ): Promise<{ outDir: string; files: BuiltFile[]; stats: Stats }> {
-    const outDir = outputDirectory(`webpack-${name}`);
+    const outDir = settings.outDir ?? outputDirectory(`webpack-${name}`);
     const plugins: WebpackPluginInstance[] = [];
     if (settings.plugin !== false) {
       plugins.push(bugsplat({ logger: logged.logger, ...settings.plugin }));
@@ -57,8 +61,8 @@ describe(`webpack ${webpack.version}`, () => {
       output: {
         path: outDir,
         // Content hashes exercise webpack's realContentHash pass, which renames files late.
-        filename: '[name].[contenthash:8].js',
-        chunkFilename: '[name].[contenthash:8].js',
+        filename: settings.filename ?? '[name].[contenthash:8].js',
+        chunkFilename: settings.filename ?? '[name].[contenthash:8].js',
         publicPath: '/',
       },
       plugins,
@@ -175,6 +179,26 @@ describe(`webpack ${webpack.version}`, () => {
     expect(seen.size).toBe(files.length * 2);
     for (const [name, content] of seen) {
       expect(readFileSync(path.join(outDir, name), 'utf8')).toBe(content);
+    }
+    expect(lines().filter((line) => line.includes('Added debug IDs on disk'))).toEqual([]);
+  });
+
+  it('does not give a rebuilt file the debug ID of a source map that an earlier build left behind', async () => {
+    // webpack does not empty the output directory unless output.clean is set.
+    const first = await build('stale-map', { filename: '[name].js' });
+    const second = await build('stale-map', {
+      outDir: first.outDir,
+      filename: '[name].js',
+      devtool: false,
+      plugin: { database: 'changed-code' },
+    });
+
+    // The source maps of the first build are still next to the rebuilt files.
+    expect(second.files.map((built) => built.name)).toEqual(first.files.map((built) => built.name));
+    expect(second.files.map((built) => built.code).join('\n')).toContain('changed-code');
+    for (const built of second.files) {
+      expect(built.code, built.name).not.toContain('debugId');
+      expect(built.code, built.name).not.toContain('_debugIds');
     }
     expect(lines().filter((line) => line.includes('Added debug IDs on disk'))).toEqual([]);
   });

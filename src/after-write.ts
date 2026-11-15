@@ -31,13 +31,17 @@ export async function afterWrite(context: AfterWriteContext): Promise<Error | un
   // Fallback. The plugins give files their debug IDs inside the bundler, but a plugin that runs
   // later can emit a file, or rewrite a source map, after that. Any emitted JavaScript file that
   // reached the disk without an ID gets one here. Files that are already complete are not written.
+  // Only a source map that this build emitted counts as a file's source map. An output directory
+  // that is not emptied between builds (webpack's default) can still hold the source map of an
+  // earlier build next to a file that was rebuilt without one, and that map describes other code.
+  const emitted = new Set(context.files.map((file) => path.resolve(directory, file)));
   const repaired = [];
   for (const file of context.files) {
     if (!JAVASCRIPT_FILE.test(file)) {
       continue;
     }
     try {
-      const result = await injectDebugIdIntoFile(path.resolve(directory, file));
+      const result = await injectDebugIdIntoFile(path.resolve(directory, file), emitted);
       if (result.changed) {
         repaired.push(file);
       }

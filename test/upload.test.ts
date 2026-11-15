@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { afterWrite } from '../src/after-write.js';
@@ -183,6 +183,27 @@ describe('afterWrite', () => {
       expect.stringMatching(/^Uploading 1 source map from /),
       expect.stringMatching(/^Uploaded 1 source map from /),
       expect.stringMatching(/^Deleted 1 source map from /),
+    ]);
+  });
+
+  it('leaves a JavaScript file alone when the source map next to it is not one this build emitted', async () => {
+    // webpack does not empty the output directory by default: main.js was rebuilt without a
+    // source map, and the main.js.map of an earlier build is still next to it.
+    const directory = directoryWithMaps('after-write-stale-map', ['main.js.map', 'current.js.map']);
+    const staleMap = readFileSync(path.join(directory, 'main.js.map'), 'utf8');
+    writeFileSync(path.join(directory, 'main.js'), 'rebuilt();');
+    writeFileSync(path.join(directory, 'current.js'), 'current();');
+    const build = context(directory, { upload: false });
+    build.context.files = ['main.js', 'current.js', 'current.js.map'];
+
+    expect(await afterWrite(build.context)).toBeUndefined();
+
+    expect(readFileSync(path.join(directory, 'main.js'), 'utf8')).toBe('rebuilt();');
+    expect(readFileSync(path.join(directory, 'main.js.map'), 'utf8')).toBe(staleMap);
+    // A file whose source map the build did emit still gets what it is missing.
+    expect(readFileSync(path.join(directory, 'current.js'), 'utf8')).toContain(`//# debugId=${deriveDebugId('current.js.map')}`);
+    expect(build.logged.lines.map((line) => line.message)).toEqual([
+      expect.stringMatching(/^Added debug IDs on disk after the build to: current\.js\. /),
     ]);
   });
 

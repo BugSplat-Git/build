@@ -30,8 +30,15 @@ async function readIfExists(file: string): Promise<string | undefined> {
   }
 }
 
-/** The places a JavaScript file's source map can be, most specific first. */
-function sourceMapCandidates(file: string, sourceMappingUrl: string | undefined): string[] {
+/**
+ * The places a JavaScript file's source map can be, most specific first. With `sourceMaps`, only
+ * the places that are in that set.
+ */
+function sourceMapCandidates(
+  file: string,
+  sourceMappingUrl: string | undefined,
+  sourceMaps: ReadonlySet<string> | undefined,
+): string[] {
   const candidates = [];
   if (sourceMappingUrl && !/^[a-z][a-z0-9+.-]*:/i.test(sourceMappingUrl) && !sourceMappingUrl.startsWith('//')) {
     const urlPath = sourceMappingUrl.replace(/[?#].*$/, '');
@@ -42,7 +49,7 @@ function sourceMapCandidates(file: string, sourceMappingUrl: string | undefined)
     }
   }
   candidates.push(`${file}.map`);
-  return [...new Set(candidates)];
+  return [...new Set(candidates)].filter((candidate) => !sourceMaps || sourceMaps.has(candidate));
 }
 
 /**
@@ -53,13 +60,17 @@ function sourceMapCandidates(file: string, sourceMappingUrl: string | undefined)
  * Rewriting a file after the bundler has finished changes its content hash: Subresource Integrity
  * values, precompressed `.gz` or `.br` copies and service worker precache manifests computed
  * earlier no longer match. The bundler plugins avoid that by doing the same work inside the build.
+ *
+ * @param sourceMaps Absolute paths of the only files that count as a source map. A bundler plugin
+ * passes the files its build emitted, so that a source map left in the output directory by an
+ * earlier build, which describes other code, is never paired with the file. Default: any file.
  */
-export async function injectDebugIdIntoFile(file: string): Promise<InjectFileResult> {
+export async function injectDebugIdIntoFile(file: string, sourceMaps?: ReadonlySet<string>): Promise<InjectFileResult> {
   const jsFile = path.resolve(file);
   const code = await readFile(jsFile, 'utf8');
   const { sourceMappingUrl } = splitTrailer(code);
 
-  for (const mapFile of sourceMapCandidates(jsFile, sourceMappingUrl)) {
+  for (const mapFile of sourceMapCandidates(jsFile, sourceMappingUrl, sourceMaps)) {
     const map = await readIfExists(mapFile);
     if (map === undefined) {
       continue;
